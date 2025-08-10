@@ -46,14 +46,8 @@ jobs:
         cd my-app
         npm run build
         
-    - name: Copy dist files to root
-      run: |
-        cp -r my-app/dist/* ./
-        
     - name: List files for debugging
       run: |
-        echo "Files in repository root:"
-        ls -la
         echo "Files in my-app/dist:"
         ls -la my-app/dist/
         
@@ -63,7 +57,7 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3
       with:
-        path: './'
+        path: './my-app/dist'
         
     - name: Deploy to GitHub Pages
       id: deployment
