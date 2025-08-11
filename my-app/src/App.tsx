@@ -1,10 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { format } from 'date-fns';
 import './App.css';
 import TableRow from './components/TableRow';
 import EditDrawer from './components/EditDrawer';
 import KpiCards from './components/KpiCards';
 import type { Ticker } from './types';
 import { ModeToggle } from '@/components/mode-toggle';
+import AppShell from '@/components/AppShell';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { Calendar } from '@/components/ui/calendar';
+import { useTheme } from '@/components/theme-provider';
 
 const emptyTicker: Ticker = {
   symbol: '',
@@ -49,8 +56,10 @@ function App() {
   const [error, setError] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [filterDate, setFilterDate] = useState('');
+  const [filterDate, setFilterDate] = useState<Date | undefined>();
   const [search, setSearch] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const { theme, setTheme } = useTheme();
 
   // mimic async load
   useEffect(() => {
@@ -67,8 +76,10 @@ function App() {
   }, []);
 
   const openEdit = (idx: number) => {
-    setEditingIndex(idx);
-    setDrawerOpen(true);
+    if (idx >= 0) {
+      setEditingIndex(idx);
+      setDrawerOpen(true);
+    }
   };
 
   const addTicker = () => {
@@ -76,11 +87,15 @@ function App() {
     setDrawerOpen(true);
   };
 
+  const exportCsv = () => {
+    alert('Export as CSV');
+  };
+
   const saveTicker = (t: Ticker) => {
     const list = tickers ? [...tickers] : [];
     if (editingIndex === null) {
       list.push({ ...t, edited: true });
-    } else {
+    } else if (editingIndex >= 0 && editingIndex < list.length) {
       list[editingIndex] = { ...t, edited: true };
     }
     setTickers(list);
@@ -89,37 +104,74 @@ function App() {
 
   const cancelEdit = () => setDrawerOpen(false);
 
+  // keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === '/' && document.activeElement !== searchRef.current) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === 'a') {
+        e.preventDefault();
+        addTicker();
+      }
+      if (e.key === 'e') {
+        e.preventDefault();
+        exportCsv();
+      }
+      if (e.key === 't') {
+        e.preventDefault();
+        setTheme(theme === 'light' ? 'dark' : 'light');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [theme, setTheme]);
+
   const filtered = (tickers ?? []).filter((t) => {
     const term = search.toLowerCase();
     const matchesSearch =
       t.symbol.toLowerCase().includes(term) || t.name.toLowerCase().includes(term);
-    const matchesDate = filterDate ? t.priceAsOf === filterDate : true;
+    const matchesDate = filterDate ? t.priceAsOf === format(filterDate, 'yyyy-MM-dd') : true;
     return matchesSearch && matchesDate;
   });
 
   return (
-    <div className="app-container">
-      <div className="top-bar">
-        <h1>Stock Watchlist</h1>
-        <div className="controls">
-          <button onClick={addTicker}>Add Ticker</button>
-          <button onClick={() => alert('Export as CSV')}>Export CSV</button>
-          <input
-            type="date"
-            value={filterDate}
-            onChange={(e) => setFilterDate(e.target.value)}
-            aria-label="Price As-Of"
-          />
-          <input
-            type="text"
-            placeholder="Search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <ModeToggle />
-        </div>
-      </div>
+    <AppShell
+      toolbar={
+        <>
+          <h1 className="text-xl font-semibold">Stock Watchlist</h1>
+          <div className="flex items-center gap-2">
+            <Button onClick={addTicker}>Add Ticker</Button>
+            <Button variant="outline" onClick={exportCsv}>
+              Export CSV
+            </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="w-[150px] justify-start text-left font-normal">
+                  {filterDate ? format(filterDate, 'yyyy-MM-dd') : 'Price As-Of'}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="p-0">
+                <Calendar selected={filterDate} onSelect={setFilterDate} />
+              </PopoverContent>
+            </Popover>
+            <Input
+              ref={searchRef}
+              type="text"
+              placeholder="Search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-[150px]"
+            />
+            <ModeToggle />
+          </div>
+        </>
+      }
+    >
+      {/* KPI cards honor loading/error */}
       <KpiCards tickers={filtered} isLoading={loading} isError={error} />
+
       {loading ? (
         <p className="empty-state">Loading tickers...</p>
       ) : error ? (
@@ -142,13 +194,22 @@ function App() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((t, idx) => (
-                <TableRow key={idx} ticker={t} onClick={() => openEdit(idx)} />
-              ))}
+              {filtered.map((t) => {
+                // ensure we edit the correct row from the original list even when filtered
+                const originalIndex = (tickers ?? []).indexOf(t);
+                return (
+                  <TableRow
+                    key={t.symbol}
+                    ticker={t}
+                    onClick={() => openEdit(originalIndex)}
+                  />
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
+
       {drawerOpen && tickers && (
         <EditDrawer
           initial={editingIndex === null ? emptyTicker : tickers[editingIndex]}
@@ -157,7 +218,7 @@ function App() {
           onCancel={cancelEdit}
         />
       )}
-    </div>
+    </AppShell>
   );
 }
 
