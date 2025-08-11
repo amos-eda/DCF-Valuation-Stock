@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './App.css';
 import TableRow from './components/TableRow';
 import EditDrawer from './components/EditDrawer';
+import KpiCards from './components/KpiCards';
 import type { Ticker } from './types';
 import { ModeToggle } from '@/components/mode-toggle';
 
@@ -43,11 +44,27 @@ const initialData: Ticker[] = [
 ];
 
 function App() {
-  const [tickers, setTickers] = useState<Ticker[]>(initialData);
+  const [tickers, setTickers] = useState<Ticker[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [filterDate, setFilterDate] = useState('');
   const [search, setSearch] = useState('');
+
+  // mimic async load
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        setTickers(initialData);
+      } catch {
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, []);
 
   const openEdit = (idx: number) => {
     setEditingIndex(idx);
@@ -60,7 +77,7 @@ function App() {
   };
 
   const saveTicker = (t: Ticker) => {
-    const list = [...tickers];
+    const list = tickers ? [...tickers] : [];
     if (editingIndex === null) {
       list.push({ ...t, edited: true });
     } else {
@@ -72,7 +89,7 @@ function App() {
 
   const cancelEdit = () => setDrawerOpen(false);
 
-  const filtered = tickers.filter((t) => {
+  const filtered = (tickers ?? []).filter((t) => {
     const term = search.toLowerCase();
     const matchesSearch =
       t.symbol.toLowerCase().includes(term) || t.name.toLowerCase().includes(term);
@@ -102,7 +119,12 @@ function App() {
           <ModeToggle />
         </div>
       </div>
-      {filtered.length === 0 ? (
+      <KpiCards tickers={filtered} isLoading={loading} isError={error} />
+      {loading ? (
+        <p className="empty-state">Loading tickers...</p>
+      ) : error ? (
+        <p className="empty-state">Failed to load tickers.</p>
+      ) : filtered.length === 0 ? (
         <p className="empty-state">No tickers yet. Click Add Ticker to begin.</p>
       ) : (
         <div className="table-wrapper">
@@ -127,7 +149,7 @@ function App() {
           </table>
         </div>
       )}
-      {drawerOpen && (
+      {drawerOpen && tickers && (
         <EditDrawer
           initial={editingIndex === null ? emptyTicker : tickers[editingIndex]}
           open={drawerOpen}
