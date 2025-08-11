@@ -3,6 +3,7 @@ import './App.css';
 import TableRow from './components/TableRow';
 import EditDrawer from './components/EditDrawer';
 import type { Ticker } from './types';
+import { ModeToggle } from '@/components/mode-toggle';
 
 const emptyTicker: Ticker = {
   symbol: '',
@@ -98,6 +99,7 @@ function App() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <ModeToggle />
         </div>
       </div>
       {filtered.length === 0 ? (
