@@ -5,37 +5,6 @@
   background: hsl(var(--background));
   color: hsl(var(--foreground));
 }
-
-.top-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-bottom: 1px solid #e5e7eb;
-  background: hsl(var(--background));
-  position: sticky;
-  top: 0;
-  z-index: 20;
-}
-
-.top-bar h1 {
-  margin: 0;
-  font-size: 1.5rem;
-}
-
-.controls {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.controls input[type="text"],
-.controls input[type="date"] {
-  padding: 4px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-}
-
 .table-wrapper {
   overflow: auto;
   flex: 1;
