@@ -3,6 +3,7 @@ import { format } from 'date-fns';
 import './App.css';
 import TableRow from './components/TableRow';
 import EditDrawer from './components/EditDrawer';
+import KpiCards from './components/KpiCards';
 import type { Ticker } from './types';
 import { ModeToggle } from '@/components/mode-toggle';
 import AppShell from '@/components/AppShell';
@@ -50,7 +51,9 @@ const initialData: Ticker[] = [
 ];
 
 function App() {
-  const [tickers, setTickers] = useState<Ticker[]>(initialData);
+  const [tickers, setTickers] = useState<Ticker[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [filterDate, setFilterDate] = useState<Date | undefined>();
@@ -58,9 +61,25 @@ function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const { theme, setTheme } = useTheme();
 
+  // mimic async load
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        setTickers(initialData);
+      } catch {
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, []);
+
   const openEdit = (idx: number) => {
-    setEditingIndex(idx);
-    setDrawerOpen(true);
+    if (idx >= 0) {
+      setEditingIndex(idx);
+      setDrawerOpen(true);
+    }
   };
 
   const addTicker = () => {
@@ -68,11 +87,15 @@ function App() {
     setDrawerOpen(true);
   };
 
+  const exportCsv = () => {
+    alert('Export as CSV');
+  };
+
   const saveTicker = (t: Ticker) => {
-    const list = [...tickers];
+    const list = tickers ? [...tickers] : [];
     if (editingIndex === null) {
       list.push({ ...t, edited: true });
-    } else {
+    } else if (editingIndex >= 0 && editingIndex < list.length) {
       list[editingIndex] = { ...t, edited: true };
     }
     setTickers(list);
@@ -81,10 +104,7 @@ function App() {
 
   const cancelEdit = () => setDrawerOpen(false);
 
-  const exportCsv = () => {
-    alert('Export as CSV');
-  };
-
+  // keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === '/' && document.activeElement !== searchRef.current) {
@@ -106,9 +126,9 @@ function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [theme, setTheme, addTicker, exportCsv]);
+  }, [theme, setTheme]);
 
-  const filtered = tickers.filter((t) => {
+  const filtered = (tickers ?? []).filter((t) => {
     const term = search.toLowerCase();
     const matchesSearch =
       t.symbol.toLowerCase().includes(term) || t.name.toLowerCase().includes(term);
@@ -127,7 +147,7 @@ function App() {
               Export CSV
             </Button>
             <Popover>
-              <PopoverTrigger>
+              <PopoverTrigger asChild>
                 <Button variant="outline" className="w-[150px] justify-start text-left font-normal">
                   {filterDate ? format(filterDate, 'yyyy-MM-dd') : 'Price As-Of'}
                 </Button>
@@ -149,7 +169,14 @@ function App() {
         </>
       }
     >
-      {filtered.length === 0 ? (
+      {/* KPI cards honor loading/error */}
+      <KpiCards tickers={filtered} isLoading={loading} isError={error} />
+
+      {loading ? (
+        <p className="empty-state">Loading tickers...</p>
+      ) : error ? (
+        <p className="empty-state">Failed to load tickers.</p>
+      ) : filtered.length === 0 ? (
         <p className="empty-state">No tickers yet. Click Add Ticker to begin.</p>
       ) : (
         <div className="table-wrapper">
@@ -167,14 +194,23 @@ function App() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((t, idx) => (
-                <TableRow key={idx} ticker={t} onClick={() => openEdit(idx)} />
-              ))}
+              {filtered.map((t) => {
+                // ensure we edit the correct row from the original list even when filtered
+                const originalIndex = (tickers ?? []).indexOf(t);
+                return (
+                  <TableRow
+                    key={t.symbol}
+                    ticker={t}
+                    onClick={() => openEdit(originalIndex)}
+                  />
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
-      {drawerOpen && (
+
+      {drawerOpen && tickers && (
         <EditDrawer
           initial={editingIndex === null ? emptyTicker : tickers[editingIndex]}
           open={drawerOpen}
