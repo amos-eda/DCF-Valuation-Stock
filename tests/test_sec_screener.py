@@ -29,7 +29,7 @@ import pandas as pd
 def test_download_file_error(monkeypatch, tmp_path):
     """download_file should propagate request errors."""
 
-    def fake_make_request(url):  # noqa: ARG001
+    def fake_make_request(url, *, headers=None):  # noqa: ARG001, ARG002
         raise requests.HTTPError("bad url")
 
     monkeypatch.setattr(ss, "make_request", fake_make_request)

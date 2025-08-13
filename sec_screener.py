@@ -34,10 +34,16 @@ session.headers.update(HEADERS)
     retry=retry_if_exception_type(requests.RequestException),
     reraise=True,
 )
-def make_request(url: str) -> requests.Response:
-    """Make HTTP GET request with retry and rate limiting."""
+def make_request(
+    url: str, *, headers: Dict[str, str] = HEADERS
+) -> requests.Response:
+    """Make HTTP GET request with retry and rate limiting.
+
+    The SEC requires a User-Agent header to be sent with all requests; callers
+    can override the default by providing ``headers``.
+    """
     time.sleep(RATE_LIMIT_SECONDS)
-    resp = session.get(url, timeout=30)
+    resp = session.get(url, headers=headers, timeout=30)
     if resp.status_code == 429 or 500 <= resp.status_code < 600:
         retry_after = resp.headers.get("Retry-After")
         if retry_after:
@@ -52,7 +58,7 @@ def make_request(url: str) -> requests.Response:
 
 def fetch_json(url: str) -> Dict:
     """Fetch JSON from URL."""
-    resp = make_request(url)
+    resp = make_request(url, headers=HEADERS)
     return resp.json()
 
 
@@ -124,7 +130,7 @@ def detect_quarter(report_date_str: str) -> str:
 
 def download_file(url: str, out_path: Path) -> None:
     """Download file from URL to output path."""
-    resp = make_request(url)
+    resp = make_request(url, headers=HEADERS)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
         f.write(resp.content)
