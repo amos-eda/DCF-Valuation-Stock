@@ -21,7 +21,9 @@ WATCHLIST = [
     {"name": "Figma", "ticker": None},  # private; handle gracefully
 ]
 
-HEADERS = {"User-Agent": "Jerry Mcguire", "Accept-Encoding": "gzip, deflate"}
+HEADERS = {"User-Agent": "Jerry Mcguire sec-10q-screener (amos@example.com)",
+    "Accept": "application/json",
+    "Accept-Encoding": "gzip, deflate"}
 RATE_LIMIT_SECONDS = 0.21
 
 session = requests.Session()
