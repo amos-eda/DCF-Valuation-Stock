@@ -147,7 +147,7 @@ function App() {
               Export CSV
             </Button>
             <Popover>
-              <PopoverTrigger asChild>
+              <PopoverTrigger>
                 <Button variant="outline" className="w-[150px] justify-start text-left font-normal">
                   {filterDate ? format(filterDate, 'yyyy-MM-dd') : 'Price As-Of'}
                 </Button>
