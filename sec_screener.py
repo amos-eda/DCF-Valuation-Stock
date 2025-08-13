@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+from datetime import date
 
 import pandas as pd
 import requests
@@ -111,6 +113,44 @@ def get_latest_10q(cik: str) -> Optional[Dict]:
     return None
 
 
+def get_10q_for_quarter(cik: str, year: int, quarter: int) -> Optional[Dict]:
+    """Fetch 10-Q filing for a specific fiscal quarter.
+
+    Parameters
+    ----------
+    cik: str
+        Company CIK code.
+    year: int
+        Fiscal year of the quarter to fetch.
+    quarter: int
+        Quarter number (1-4). Q4 uses Form 10-K and will return ``None``.
+    """
+    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    data = fetch_json(url)
+    recent = data.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    if not forms:
+        return None
+    fields = [
+        "filingDate",
+        "reportDate",
+        "accessionNumber",
+        "primaryDocument",
+    ]
+    for form_type, amended in (("10-Q", False), ("10-Q/A", True)):
+        for idx, f in reversed(list(enumerate(forms))):
+            if f == form_type:
+                info = {k: recent.get(k, [""])[idx] for k in fields}
+                report_date = info["reportDate"] or info["filingDate"]
+                q = detect_quarter(report_date)
+                yr = parser.parse(report_date).year
+                if q == f"Q{quarter}" and yr == year:
+                    info["reportDate"] = report_date
+                    info["amended"] = amended
+                    return info
+    return None
+
+
 def build_10q_url(cik: str, accession: str, primary_doc: str) -> str:
     """Construct URL to primary 10-Q document."""
     cik_trim = str(int(cik))
@@ -128,6 +168,29 @@ def detect_quarter(report_date_str: str) -> str:
     if 4 <= dt.month <= 6:
         return "Q2"
     return "Q3"
+
+
+def latest_filing_quarter(today: date | None = None) -> Tuple[int, int]:
+    """Return the most recently completed fiscal quarter.
+
+    Parameters
+    ----------
+    today: date, optional
+        Date to evaluate. Defaults to ``date.today()``.
+
+    Returns
+    -------
+    tuple
+        ``(year, quarter)`` where ``quarter`` is 1-4.
+    """
+    today = today or date.today()
+    current_q = (today.month - 1) // 3 + 1
+    year = today.year
+    latest_q = current_q - 1
+    if latest_q == 0:
+        latest_q = 4
+        year -= 1
+    return year, latest_q
 
 
 def download_file(url: str, out_path: Path) -> None:
@@ -159,6 +222,8 @@ def main() -> None:
     except Exception as exc:  # pylint: disable=broad-except
         mapping_df = pd.DataFrame(columns=["ticker", "cik_str"])
         mapping_error = str(exc)
+
+    target_year, target_quarter = latest_filing_quarter()
 
     for item in WATCHLIST:
         name = item["name"]
@@ -195,38 +260,45 @@ def main() -> None:
                     notes.append("Ticker not found in SEC mapping.")
                 else:
                     row["CIK"] = cik
-                    filing = get_latest_10q(cik)
-                    if not filing:
+                    row["Quarter"] = f"Q{target_quarter}"
+                    if target_quarter == 4:
                         row["Status"] = "NO_SEC_FILINGS"
-                        notes.append("No 10-Q filings found.")
+                        notes.append("Q4 not applicable for 10-Q")
                     else:
-                        report_date = filing["reportDate"]
-                        quarter = detect_quarter(report_date)
-                        if parser.parse(report_date).month >= 10:
-                            notes.append("Q4 not applicable for 10-Q")
-                        url = build_10q_url(cik, filing["accessionNumber"], filing["primaryDocument"])
-                        out_dir = Path("sec_filings") / ticker
-                        ext = Path(filing["primaryDocument"]).suffix
-                        filename = f"{ticker}_{report_date}_Q{quarter[-1]}_10-Q"
-                        if filing["amended"]:
-                            filename += "_A"
-                        filename += ext
-                        out_path = out_dir / filename
-                        download_file(url, out_path)
-                        row.update(
-                            {
-                                "Latest 10Q Filing Date": filing["filingDate"],
-                                "Report Date": report_date,
-                                "Quarter": quarter,
-                                "Accession Number": filing["accessionNumber"],
-                                "Primary Document": filing["primaryDocument"],
-                                "10Q URL": url,
-                                "Saved File Path": str(out_path),
-                                "Amended": filing["amended"],
-                                "Status": "OK",
-                                "Company Facts URL": f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
-                            }
-                        )
+                        filing = get_10q_for_quarter(cik, target_year, target_quarter)
+                        if not filing:
+                            row["Status"] = "NO_SEC_FILINGS"
+                            notes.append(
+                                f"No 10-Q filings found for Q{target_quarter} {target_year}."
+                            )
+                        else:
+                            report_date = filing["reportDate"]
+                            url = build_10q_url(
+                                cik, filing["accessionNumber"], filing["primaryDocument"]
+                            )
+                            out_dir = Path("sec_filings") / ticker
+                            ext = Path(filing["primaryDocument"]).suffix
+                            filename = (
+                                f"{ticker}_{report_date}_Q{target_quarter}_10-Q"
+                            )
+                            if filing["amended"]:
+                                filename += "_A"
+                            filename += ext
+                            out_path = out_dir / filename
+                            download_file(url, out_path)
+                            row.update(
+                                {
+                                    "Latest 10Q Filing Date": filing["filingDate"],
+                                    "Report Date": report_date,
+                                    "Accession Number": filing["accessionNumber"],
+                                    "Primary Document": filing["primaryDocument"],
+                                    "10Q URL": url,
+                                    "Saved File Path": str(out_path),
+                                    "Amended": filing["amended"],
+                                    "Status": "OK",
+                                    "Company Facts URL": f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
+                                }
+                            )
         except Exception as exc:  # pylint: disable=broad-except
             row["Status"] = "ERROR"
             notes.append(str(exc))

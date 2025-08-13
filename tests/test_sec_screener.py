@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from datetime import date
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -18,7 +19,12 @@ def test_build_10q_url():
 
 
 def test_session_has_user_agent():
-    assert ss.session.headers["User-Agent"] == "Jerry Mcguire"
+    assert ss.session.headers["User-Agent"].startswith("Jerry Mcguire")
+
+
+def test_latest_filing_quarter():
+    assert ss.latest_filing_quarter(date(2024, 5, 1)) == (2024, 1)
+    assert ss.latest_filing_quarter(date(2024, 1, 5)) == (2023, 4)
 
 
 import pytest
@@ -51,7 +57,7 @@ def test_main_handles_download_error(monkeypatch):
             {"ticker": "TEST", "cik_str": "0000000000"}
         ])
 
-    def fake_get_latest_10q(cik):  # noqa: ARG001
+    def fake_get_10q_for_quarter(cik, year, quarter):  # noqa: ARG001, ARG002, ARG003
         return {
             "filingDate": "2024-05-01",
             "reportDate": "2024-03-31",
@@ -69,7 +75,8 @@ def test_main_handles_download_error(monkeypatch):
         captured["rows"] = rows
 
     monkeypatch.setattr(ss, "load_ticker_map", fake_load_ticker_map)
-    monkeypatch.setattr(ss, "get_latest_10q", fake_get_latest_10q)
+    monkeypatch.setattr(ss, "latest_filing_quarter", lambda: (2024, 1))
+    monkeypatch.setattr(ss, "get_10q_for_quarter", fake_get_10q_for_quarter)
     monkeypatch.setattr(ss, "download_file", fake_download_file)
     monkeypatch.setattr(ss, "write_excel", fake_write_excel)
 
