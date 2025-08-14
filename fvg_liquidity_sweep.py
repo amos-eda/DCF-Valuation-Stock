@@ -106,12 +106,15 @@ def fetch_polygon_1m(symbol: str, start: datetime, end: datetime, api_key: str) 
 
 
 def filter_session(df: pd.DataFrame, tz: str = "America/New_York") -> pd.DataFrame:
-    """Filter dataframe to regular US equity session (09:30-16:00 ET)."""
+    """Filter dataframe to regular US equity session (09:30-16:00 ET).
+
+    The input DataFrame must have a ``DatetimeIndex``.  The function converts the
+    index to the desired timezone and drops any rows outside regular trading
+    hours.
+    """
     df = df.copy()
-    df["timestamp"] = df["timestamp"].dt.tz_convert(tz)
-    df["date"] = df["timestamp"].dt.date
-    df = df.between_time("09:30", "16:00")
-    return df
+    df.index = df.index.tz_convert(tz)
+    return df.between_time("09:30", "16:00")
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -296,15 +299,24 @@ def score_fvg(fvg_row: pd.Series, df: pd.DataFrame, config: Dict) -> int:
 # ---------------------------------------------------------------------------
 
 
-def process_symbol(symbol: str, config: Dict, start: datetime, end: datetime, outdir: Path) -> pd.DataFrame:
+def process_symbol(
+    symbol: str,
+    config: Dict,
+    start: datetime,
+    end: datetime,
+    session_only: bool,
+    outdir: Path,
+) -> pd.DataFrame:
     api_key = os.environ.get("POLYGON_API_KEY", "")
     df = fetch_polygon_1m(symbol, start, end, api_key)
     raw_path = outdir / "data" / "raw" / f"{symbol}.parquet"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(raw_path)
 
-    df = filter_session(df)
     df.set_index("timestamp", inplace=True)
+    if session_only:
+        df = filter_session(df)
+    df["date"] = df.index.date
     df["atr"] = compute_atr(df)
     df["rvol"] = compute_rvol(df)
     df["vwap"] = compute_session_vwap(df)
@@ -353,7 +365,7 @@ def main() -> None:
     outdir = Path.cwd()
     all_results = []
     for sym in args.symbols:
-        fvgs = process_symbol(sym, config, start, end, outdir)
+        fvgs = process_symbol(sym, config, start, end, args.session_only, outdir)
         if not fvgs.empty:
             fvgs["symbol"] = sym
             all_results.append(fvgs)

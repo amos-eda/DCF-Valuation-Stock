@@ -36,6 +36,7 @@ Arguments:
 - `--symbols` – list of ticker symbols to process.
 - `--months` – number of months of historical data to download (default 3).
 - `--start`/`--end` – optional ISO timestamps overriding the rolling window.
+- `--session-only` – filter to the regular 9:30–16:00 ET session.
 - `--config` – path to the YAML config (defaults to `config.yaml`).
 
 Outputs are stored in:
