@@ -1,12 +1,16 @@
-"""Sample script: fetch 1-minute NQ futures bars via Polygon flat files.
+"""Sample script: fetch 1-minute NQ futures bars from Polygon.
 
-Reads credentials from `.env` (POLYGON_S3_*) and prints a preview.
+Supports two sources selectable at runtime:
+- "api": Polygon REST Aggregates v2 (requires POLYGON_API_KEY)
+- "flatfile": Polygon flat files via S3-compatible endpoint (requires POLYGON_S3_*)
 
 Usage
 -----
-python sample_nq_fetch.py                  # fetch previous weekday
-python sample_nq_fetch.py --start 2024-08-01 --end 2024-08-02
-python sample_nq_fetch.py --days 3         # fetch last 3 weekdays
+# API mode (symbol required)
+python sample_nq_fetch.py --source api --symbol CME:NQZ24 --start 2024-08-01 --end 2024-08-02
+
+# Flatfile mode (uses S3 creds from .env)
+python sample_nq_fetch.py --source flatfile --days 2
 """
 
 from __future__ import annotations
@@ -16,7 +20,10 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 
+from typing import List
+
 from polygon_flatfiles_nq import fetch_nq_minute_range
+from polygon_api_nq import fetch_nq_minute_api
 
 
 def previous_weekday(d: date) -> date:
@@ -48,7 +55,9 @@ def make_range_from_args(args) -> tuple[date, date]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Fetch sample NQ 1m bars from Polygon flat files")
+    ap = argparse.ArgumentParser(description="Fetch sample NQ 1m bars from Polygon (API or flat files)")
+    ap.add_argument("--source", choices=["api", "flatfile"], default="api", help="Data source to use")
+    ap.add_argument("--symbol", action="append", help="Polygon futures symbol (e.g., CME:NQZ24). Repeat for multiple symbols. Required in api mode.")
     ap.add_argument("--start", help="Start date YYYY-MM-DD", default=None)
     ap.add_argument("--end", help="End date YYYY-MM-DD", default=None)
     ap.add_argument("--days", type=int, help="Fetch last N weekdays", default=None)
@@ -57,9 +66,30 @@ def main() -> None:
     args = ap.parse_args()
 
     start, end = make_range_from_args(args)
-    print(f"Fetching NQ 1m bars from {start} to {end} ...")
+    print(f"Fetching NQ 1m bars from {start} to {end} via {args.source} ...")
+    if args.source == "api":
+        # Quick check for API key presence to avoid silent empties
+        import os
+        from dotenv import load_dotenv  # type: ignore
+        try:
+            load_dotenv()
+        except Exception:
+            pass
+        if not os.environ.get("POLYGON_API_KEY"):
+            print("Warning: POLYGON_API_KEY is not set. Set it in .env or your environment.")
+            print("Example: POLYGON_API_KEY=YOUR_KEY_HERE")
+        if not args.symbol:
+            print("Tip: For Aug 2024 dates, try --symbol CME:NQU24 (Sep) or a specific contract like CME:NQZ24 (Dec) if supported by your plan.")
 
-    df = fetch_nq_minute_range(start, end, verbose=args.verbose)
+    if args.source == "api":
+        if not args.symbol:
+            raise SystemExit("--symbol is required for --source api (e.g., --symbol CME:NQZ24)")
+        symbols: List[str] = []
+        for s in args.symbol:
+            symbols.extend([t.strip() for t in s.split(",") if t.strip()])
+        df = fetch_nq_minute_api(symbols, start, end, verbose=args.verbose)
+    else:
+        df = fetch_nq_minute_range(start, end, verbose=args.verbose)
     if df.empty:
         print("No data returned. Check dates, credentials, or dataset availability.")
         return
@@ -79,4 +109,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

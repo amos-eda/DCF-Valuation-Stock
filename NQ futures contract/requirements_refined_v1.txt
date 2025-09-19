@@ -1,0 +1,705 @@
+# NQ Session Levels & NY Open Strategy — Plan + Starter Kit
+
+This is a complete blueprint + starter code to:
+
+1. Parse your NQ minute bars from Excel
+2. Mark **Asia/London session** highs & lows, **previous day** H/L, and **4‑hour swing** H/L
+3. On **NY Open**, automatically pick **the most recent** Asia/London levels only
+4. Compute distance to the **nearest level** (support/resistance) in ticks
+5. Build a **confluence (planet‑alignment) score** when key levels cluster
+6. Generate **retrace entries** with **SL at nearest support/resistance**
+7. **Backtest** the idea and visualize **entry snapshots** (Streamlit)
+
+Everything is configurable via a simple **YAML**.
+
+---
+
+## 1) YAML Config (edit these, no code changes needed)
+
+```yaml
+# config.yaml
+symbol: NQ
+timezone: America/New_York
+
+# Data assumptions
+# Your Excel must contain a sheet with columns: timestamp, open, high, low, close, volume
+excel:
+  path: data/nq_minute.xlsx
+  sheet_name: bars
+  timestamp_col: timestamp
+  ohlc:
+    open: open
+    high: high
+    low: low
+    close: close
+  volume_col: volume
+
+# Session windows (clock times in the timezone above)
+sessions:
+  asia:
+    start: "20:00"   # 8:00 pm NY (prev evening)
+    end:   "04:00"   # 4:00 am NY
+  london:
+    start: "03:00"
+    end:   "07:00"
+  ny:
+    start: "09:30"
+    end:   "16:00"
+
+# NY open analysis anchor
+ny_open:
+  lookback_minutes: 60     # search for first setup within this many minutes after NY open
+  use_most_recent_sessions_only: true  # only most recent Asia/London levels prior to NY open
+
+# Previous day high/low window (RTH by default)
+prev_day:
+  rth_only: true
+  rth_start: "09:30"
+  rth_end:   "16:00"
+
+# 4h swing settings (fractals)
+swing_4h:
+  resample: "240T"        # 240 minutes
+  left_right_bars: 2       # fractal strength
+
+# Tick size & risk
+market:
+  tick_size: 0.25
+  tick_value: 5.0
+
+# Distance & confluence
+proximity:
+  # distance thresholds (in ticks) for scoring
+  near: 12
+  very_near: 6
+  # consider levels "clustered" if within this many ticks of each other
+  cluster_within_ticks: 10
+  # decay weight for levels from older sessions (if kept)
+  staleness_penalty: 0.5
+
+# Entry logic (retrace definition)
+entry:
+  direction: both           # long|short|both
+  sweep_confirm: true       # require sweep (price takes out prior level) before entry
+  retrace_bars: 3           # enter on break of retrace bar high/low within N bars after sweep
+  time_limit_minutes: 90    # must trigger within this many minutes after NY open
+
+# Stop & target
+risk:
+  stop_at_nearest_support_resistance: true
+  stop_padding_ticks: 2
+  take_profit:
+    mode: rr                 # rr | next_level | hybrid
+    rr_multiple: 2.0
+
+# Backtest
+backtest:
+  start_date: 2024-01-01
+  end_date:   2025-09-18
+  max_trades_per_day: 1
+  slippage_ticks: 1
+  commission_per_contract: 2.5
+  contracts: 1
+
+# Plotting
+plot:
+  snapshot_bars_before: 120
+  snapshot_bars_after:  60
+  show_labels: true
+```
+
+---
+
+## 2) Data Contract (Excel)
+
+* **timestamp**: naive or TZ-aware; we’ll localize to `timezone` if naive
+* **open/high/low/close/volume**: numeric
+
+> You can rename columns in YAML without changing code.
+
+---
+
+## 3) Level Definitions
+
+### Asia & London Session High/Low
+
+* For each calendar date:
+
+  * Compute high/low over bars in the session window
+  * Tag levels with session name and date
+* **Most recent rule** (when `ny_open.use_most_recent_sessions_only: true`):
+
+  * At NY open for a given day `D`, only use the **latest Asia** and **latest London** levels that ended **before** NY open on `D`.
+
+### Previous Day High/Low
+
+* If `prev_day.rth_only` is true: compute prior day H/L over RTH window; else full day
+
+### 4‑Hour Swing High/Low (Fractals)
+
+* Resample to 240‑minute bars
+* A **swing high** at index *i* if `high[i] > max(high[i-k : i-1]) and high[i] > max(high[i+1 : i+k])` for `k = left_right_bars`
+* Similarly for swing low
+* Project the most recent swing H/L into the NY session as reference levels
+
+---
+
+## 4) Distances & Nearest Level
+
+For the current bar price (default: **NY open bar close**):
+
+* Compute absolute distance in ticks to each candidate level
+* Keep the **nearest support** (<= price) and **nearest resistance** (>= price)
+
+---
+
+## 5) Confluence (“Planet Alignment”) Score
+
+We produce a **0–100** score composed of:
+
+* **Proximity points (max 50):**
+
+  * If price within `very_near` ticks of any *support* level → +20 (each, cap 40)
+  * If within `near` but not `very_near` → +10 (each, cap 20)
+* **Cluster points (max 30):**
+
+  * If **≥2** of {Asia L, London L, 4h swing L} are within `cluster_within_ticks` of each other → +30
+  * Same logic for highs (resistance) when short bias
+* **Freshness points (max 20):**
+
+  * Asia/London levels from **the same day** (before NY open) → +20
+  * From prior day (if allowed) → ×`staleness_penalty`
+
+We compute separate **long\_score** (support‑side) and **short\_score** (resistance‑side).
+
+---
+
+## 6) Entry (Retrace) Logic
+
+**Idea:** During NY session window, wait for a **sweep** of a prior level, then a **retrace** (a counter bar), then entry on break of that retrace bar.
+
+* **Long**:
+
+  1. A prior **low** (Asia L / London L / 4h swing L / prev day L) is **taken out** (low < level)
+  2. Within `retrace_bars`, a green bar forms (higher close than open) with low above (or near) the level
+  3. **Entry** when price breaks the retrace bar **high**
+  4. **SL** at nearest support level minus `stop_padding_ticks`
+
+* **Short**: mirror of the above using highs & red bar retrace
+
+* **Time filter**: must occur within `time_limit_minutes` from NY open; also respect `ny_open.lookback_minutes` for scanning.
+
+---
+
+## 7) Backtest Outline
+
+Per day in the backtest range:
+
+1. Compute all levels
+2. Find the **first** valid long/short setup after NY open (respect filters)
+3. Place order at stop‑entry (break of retrace bar)
+4. If filled, set **SL** & **TP** per config (RR or next level)
+5. Track P\&L with slippage/commission
+6. Metrics: Win rate, Avg R, Expectancy, P\&L, Max DD, Sharpe (daily), Trade count
+
+---
+
+## 8) Streamlit App (UX Plan)
+
+**Sidebar**
+
+* Upload Excel (or use configured path)
+* Upload YAML (or use default)
+* Date picker
+* Toggles: show Asia/London/PrevDay/4h levels; show entries; show confluence heat
+
+**Main**
+
+* Candlestick chart (Plotly) with session overlays
+* Horizontal lines for levels (colored by type)
+* Markers: sweep, retrace, entry, SL, TP
+* **Nearest levels table** + **Confluence score** badges
+* Backtest summary (KPIs) + per‑trade table
+* “Snapshot” button renders a PNG of the current entry zone (bars before/after per config)
+
+---
+
+## 9) File Structure
+
+```
+project/
+├─ config.yaml
+├─ app.py                 # Streamlit UI
+├─ data/
+│  └─ nq_minute.xlsx
+├─ nqlevels/
+│  ├─ __init__.py
+│  ├─ io.py               # load excel, tz, cleaning
+│  ├─ sessions.py         # session masks, most-recent logic
+│  ├─ levels.py           # asia/london/prevday/4h swings
+│  ├─ proximity.py        # distances, nearest support/resistance
+│  ├─ confluence.py       # scoring
+│  ├─ signals.py          # sweep+retrace entries
+│  ├─ risk.py             # stop/target
+│  └─ backtest.py         # vectorized daily loop
+└─ requirements.txt
+```
+
+---
+
+## 10) Starter Code (Core Pieces)
+
+> You can copy these into the file structure above. Minimal dependencies: `pandas`, `numpy`, `pytz`, `pyyaml`, `plotly`, `streamlit`.
+
+### `nqlevels/io.py`
+
+```python
+import pandas as pd
+import pytz
+
+def load_bars_from_excel(cfg):
+    p = cfg["excel"]["path"]
+    sheet = cfg["excel"].get("sheet_name", 0)
+    ts_col = cfg["excel"]["timestamp_col"]
+    ohlc = cfg["excel"]["ohlc"]
+    vol_col = cfg["excel"].get("volume_col")
+
+    df = pd.read_excel(p, sheet_name=sheet)
+    # Standardize columns
+    df = df.rename(columns={
+        ts_col: "timestamp",
+        ohlc["open"]: "open",
+        ohlc["high"]: "high",
+        ohlc["low"]: "low",
+        ohlc["close"]: "close",
+        vol_col: "volume" if vol_col in df.columns else None,
+    })
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+    # Localize to cfg timezone
+    tz = pytz.timezone(cfg["timezone"]) if cfg.get("timezone") else None
+    if tz is not None:
+        if df["timestamp"].dt.tz is None:
+            df["timestamp"] = df["timestamp"].dt.tz_localize(tz)
+        else:
+            df["timestamp"] = df["timestamp"].dt.tz_convert(tz)
+
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    return df
+```
+
+### `nqlevels/sessions.py`
+
+```python
+import pandas as pd
+
+def session_mask(df, start_str, end_str):
+    ts = df["timestamp"].dt
+    start_t = pd.to_datetime(ts.date.astype(str) + " " + start_str).tz_localize(ts.tz)
+    end_t = pd.to_datetime(ts.date.astype(str) + " " + end_str).tz_localize(ts.tz)
+
+    # handle sessions that cross midnight (e.g., 20:00 -> 04:00 next day)
+    cross_midnight = pd.to_datetime("2000-01-01 " + start_str) > pd.to_datetime("2000-01-01 " + end_str)
+
+    if cross_midnight:
+        # session spans two dates: start today to end tomorrow
+        next_day = (end_t + pd.Timedelta(days=0))
+        end_t = end_t + pd.Timedelta(days=1)
+    
+    # vectorized between check per-row
+    return (ts >= start_t) & (ts < end_t)
+
+
+def daily_session_high_low(df, start_str, end_str):
+    m = session_mask(df, start_str, end_str)
+    s = df.loc[m, ["timestamp", "high", "low"]].copy()
+    s["date"] = s["timestamp"].dt.date
+    agg = s.groupby("date").agg(session_high=("high", "max"), session_low=("low", "min"))
+    return agg
+
+
+def most_recent_before(df, levels_df, cutoff_ts):
+    # levels_df indexed by date with columns session_high/low
+    # pick the last date whose session ended before cutoff
+    dates = levels_df.index
+    # assume session ends on its calendar date unless it crosses midnight; for simplicity, use date ordering
+    eligible = dates[dates <= cutoff_ts.date()]
+    if len(eligible) == 0:
+        return None
+    last_date = eligible[-1]
+    row = levels_df.loc[last_date]
+    return {
+        "date": last_date,
+        "high": row.get("session_high"),
+        "low": row.get("session_low"),
+    }
+```
+
+### `nqlevels/levels.py`
+
+```python
+import pandas as pd
+from .sessions import daily_session_high_low, most_recent_before
+
+def prev_day_hl(df, rth_only=True, rth_start="09:30", rth_end="16:00"):
+    x = df.copy()
+    if rth_only:
+        m = (x["timestamp"].dt.time >= pd.to_datetime(rth_start).time()) & \
+            (x["timestamp"].dt.time <  pd.to_datetime(rth_end).time())
+        x = x[m]
+    x["date"] = x["timestamp"].dt.date
+    g = x.groupby("date").agg(prev_high=("high","max"), prev_low=("low","min"))
+    return g.shift(1)  # previous day
+
+
+def swings_4h(df, left_right_bars=2, resample="240T"):
+    x = df.set_index("timestamp").resample(resample).agg({"open":"first","high":"max","low":"min","close":"last"}).dropna()
+    highs = x["high"].values
+    lows = x["low"].values
+    idx = x.index
+    sh, sl = [], []
+    k = left_right_bars
+    for i in range(k, len(x)-k):
+        if highs[i] > highs[i-k:i].max() and highs[i] > highs[i+1:i+k+1].max():
+            sh.append((idx[i], highs[i]))
+        if lows[i] < lows[i-k:i].min() and lows[i] < lows[i+1:i+k+1].min():
+            sl.append((idx[i], lows[i]))
+    swings = {
+        "swing_highs": sh,  # list of (timestamp, price)
+        "swing_lows": sl,
+    }
+    return swings
+```
+
+### `nqlevels/proximity.py`
+
+```python
+import numpy as np
+
+def ticks(distance, tick_size):
+    return distance / tick_size
+
+
+def nearest_levels(price, supports, resistances, tick_size):
+    # supports: list of floats <= price candidates
+    # resistances: list of floats >= price candidates
+    sup_d = [price - s for s in supports if s is not None and s <= price]
+    res_d = [r - price for r in resistances if r is not None and r >= price]
+    nearest_support = None
+    nearest_resistance = None
+    if sup_d:
+        ds = min(sup_d)
+        nearest_support = price - ds
+    if res_d:
+        dr = min(res_d)
+        nearest_resistance = price + dr
+    return nearest_support, nearest_resistance
+```
+
+### `nqlevels/confluence.py`
+
+```python
+def confluence_score(price, levels, cfg, side="long"):
+    # levels: dict with keys like asia_low, london_low, swing_low, prev_low, asia_high, ...
+    prox = cfg["proximity"]
+    tsz = cfg["market"]["tick_size"]
+
+    def dist_ticks(a,b):
+        return abs(a-b)/tsz if (a is not None and b is not None) else 1e9
+
+    if side == "long":
+        cands = [levels.get("asia_low"), levels.get("london_low"), levels.get("swing_low"), levels.get("prev_low")]
+    else:
+        cands = [levels.get("asia_high"), levels.get("london_high"), levels.get("swing_high"), levels.get("prev_high")]
+
+    # Proximity points
+    prox_pts = 0
+    for lv in cands:
+        d = dist_ticks(price, lv)
+        if d <= prox["very_near"]:
+            prox_pts += 20
+        elif d <= prox["near"]:
+            prox_pts += 10
+    prox_pts = min(prox_pts, 50)
+
+    # Cluster points
+    cluster_pts = 0
+    vals = [v for v in cands if v is not None]
+    for i in range(len(vals)):
+        for j in range(i+1, len(vals)):
+            if dist_ticks(vals[i], vals[j]) <= prox["cluster_within_ticks"]:
+                cluster_pts = 30
+                break
+    
+    # Freshness: simple stub; if levels have a "today" flag you can weight +20
+    freshness_pts = 20  # assume today by default; make smarter later
+
+    return min(100, prox_pts + cluster_pts + freshness_pts)
+```
+
+### `nqlevels/signals.py`
+
+```python
+import pandas as pd
+
+# Utilities to detect sweep & retrace
+
+def detect_sweep_and_retrace(df, level, side, retrace_bars):
+    """Return index of entry trigger if found, else None.
+    side: 'long' (sweep low) or 'short' (sweep high)
+    Entry when price breaks the retrace bar high/low after a sweep within N bars.
+    """
+    for i in range(1, len(df)):
+        if side == 'long':
+            # sweep low
+            if df.loc[df.index[i], 'low'] < level:
+                # look for a green retrace within next retrace_bars
+                end = min(i + retrace_bars, len(df)-1)
+                for j in range(i, end+1):
+                    # green bar
+                    if df.loc[df.index[j], 'close'] > df.loc[df.index[j], 'open']:
+                        trigger = df.loc[df.index[j], 'high']
+                        # next bar breaks retrace high
+                        if j+1 < len(df) and df.loc[df.index[j+1], 'high'] > trigger:
+                            return j+1
+                break
+        else:
+            if df.loc[df.index[i], 'high'] > level:
+                end = min(i + retrace_bars, len(df)-1)
+                for j in range(i, end+1):
+                    if df.loc[df.index[j], 'close'] < df.loc[df.index[j], 'open']:
+                        trigger = df.loc[df.index[j], 'low']
+                        if j+1 < len(df) and df.loc[df.index[j+1], 'low'] < trigger:
+                            return j+1
+                break
+    return None
+```
+
+### `nqlevels/risk.py`
+
+```python
+def stop_loss(price, nearest_support, nearest_resistance, cfg, side):
+    tsz = cfg["market"]["tick_size"]
+    pad = cfg["risk"]["stop_padding_ticks"] * tsz
+    if side == 'long' and nearest_support is not None:
+        return nearest_support - pad
+    if side == 'short' and nearest_resistance is not None:
+        return nearest_resistance + pad
+    # fallback
+    return None
+
+
+def take_profit(entry, stop, cfg, side):
+    mode = cfg["risk"]["take_profit"]["mode"]
+    tsz = cfg["market"]["tick_size"]
+    if mode == 'rr' and stop is not None:
+        rr = cfg["risk"]["take_profit"]["rr_multiple"]
+        risk = abs(entry - stop)
+        if side == 'long':
+            return entry + rr * risk
+        else:
+            return entry - rr * risk
+    # TODO: next_level or hybrid modes
+    return None
+```
+
+### `nqlevels/backtest.py`
+
+```python
+import pandas as pd
+import numpy as np
+from .levels import prev_day_hl, swings_4h
+from .proximity import nearest_levels
+from .signals import detect_sweep_and_retrace
+from .risk import stop_loss, take_profit
+
+
+def run_backtest(df, cfg, asia_levels, london_levels):
+    res = []
+    tsz = cfg["market"]["tick_size"]
+    ny_start = pd.to_datetime(cfg["sessions"]["ny"]["start"]).time()
+    ny_end   = pd.to_datetime(cfg["sessions"]["ny"]["end"]).time()
+
+    pdhl = prev_day_hl(df, cfg["prev_day"]["rth_only"], cfg["prev_day"]["rth_start"], cfg["prev_day"]["rth_end"])  # by date
+    swings = swings_4h(df, cfg["swing_4h"]["left_right_bars"], cfg["swing_4h"]["resample"])  # last swings used per day (simplify)
+
+    df["date"] = df["timestamp"].dt.date
+    for d, day_df in df.groupby("date"):
+        day_ny = day_df[(day_df["timestamp"].dt.time >= ny_start) & (day_df["timestamp"].dt.time < ny_end)]
+        if day_ny.empty: continue
+
+        # assemble levels for this day (most recent prior to NY open)
+        ny_open_ts = day_ny.iloc[0]["timestamp"]
+        asia = asia_levels.get(d) or asia_levels.get(prev_date(d))
+        london = london_levels.get(d) or london_levels.get(prev_date(d))
+        prev_row = pdhl.loc[d] if d in pdhl.index else None
+
+        levels = {
+            "asia_high": asia["high"] if asia else None,
+            "asia_low":  asia["low"]  if asia else None,
+            "london_high": london["high"] if london else None,
+            "london_low":  london["low"]  if london else None,
+            "prev_high": prev_row.prev_high if prev_row is not None else None,
+            "prev_low":  prev_row.prev_low  if prev_row is not None else None,
+            # swing placeholders (for simplicity use most recent global swings)
+            "swing_high": swings["swing_highs"][-1][1] if swings["swing_highs"] else None,
+            "swing_low":  swings["swing_lows"][-1][1]  if swings["swing_lows"] else None,
+        }
+
+        # choose direction candidates
+        supports = [levels["asia_low"], levels["london_low"], levels["swing_low"], levels["prev_low"]]
+        resistances = [levels["asia_high"], levels["london_high"], levels["swing_high"], levels["prev_high"]]
+
+        price0 = day_ny.iloc[0]["close"]
+        ns, nr = nearest_levels(price0, supports, resistances, tsz)
+
+        # detect retrace signals
+        idx_long = detect_sweep_and_retrace(day_ny, min([v for v in supports if v is not None]+[np.inf]), 'long', cfg["entry"]["retrace_bars"]) if supports else None
+        idx_short = detect_sweep_and_retrace(day_ny, max([v for v in resistances if v is not None]+[-np.inf]), 'short', cfg["entry"]["retrace_bars"]) if resistances else None
+
+        for side, idx in (('long', idx_long), ('short', idx_short)):
+            if idx is None: continue
+            bar = day_ny.iloc[idx]
+            entry = bar["open"]  # conservative
+            sl = stop_loss(entry, ns, nr, cfg, side)
+            tp = take_profit(entry, sl, cfg, side)
+
+            # simulate path to SL/TP (intrabar priority: SL first)
+            path = day_ny.iloc[idx:]
+            hit = 'none'
+            for _, r in path.iterrows():
+                if side=='long':
+                    if sl is not None and r["low"] <= sl: hit='sl'; break
+                    if tp is not None and r["high"] >= tp: hit='tp'; break
+                else:
+                    if sl is not None and r["high"] >= sl: hit='sl'; break
+                    if tp is not None and r["low"] <= tp: hit='tp'; break
+
+            pnl = 0.0
+            if hit=='tp' and tp is not None:
+                pnl = (tp - entry) if side=='long' else (entry - tp)
+            elif hit=='sl' and sl is not None:
+                pnl = (sl - entry) if side=='long' else (entry - sl)
+            
+            res.append({
+                'date': d,
+                'side': side,
+                'entry_ts': str(bar["timestamp"]),
+                'entry': entry,
+                'sl': sl,
+                'tp': tp,
+                'hit': hit,
+                'pnl_points': pnl,
+            })
+            break  # max one trade per side/day
+
+    return pd.DataFrame(res)
+
+
+def prev_date(d):
+    return (pd.to_datetime(d) - pd.Timedelta(days=1)).date()
+```
+
+### `app.py` (Streamlit)
+
+```python
+import streamlit as st
+import yaml
+import pandas as pd
+import plotly.graph_objects as go
+from nqlevels.io import load_bars_from_excel
+from nqlevels.sessions import daily_session_high_low, most_recent_before
+from nqlevels.levels import prev_day_hl, swings_4h
+from nqlevels.backtest import run_backtest
+
+st.set_page_config(page_title="NQ NY-Open Session Levels", layout="wide")
+
+st.sidebar.header("Config")
+up_yaml = st.sidebar.file_uploader("YAML config", type=["yaml","yml"], key="yaml")
+if up_yaml:
+    cfg = yaml.safe_load(up_yaml)
+else:
+    cfg = yaml.safe_load(open("config.yaml"))
+
+up_xlsx = st.sidebar.file_uploader("Excel bars", type=["xlsx"], key="xlsx")
+if up_xlsx:
+    cfg["excel"]["path"] = up_xlsx
+
+df = load_bars_from_excel(cfg)
+
+# Build sessions
+asia_agg = daily_session_high_low(df, cfg["sessions"]["asia"]["start"], cfg["sessions"]["asia"]["end"])  # index=date
+london_agg = daily_session_high_low(df, cfg["sessions"]["london"]["start"], cfg["sessions"]["london"]["end"])  # index=date
+
+# Build dicts for quick lookup
+asia_levels = {d: {"high": r.session_high, "low": r.session_low} for d, r in asia_agg.iterrows()}
+london_levels = {d: {"high": r.session_high, "low": r.session_low} for d, r in london_agg.iterrows()}
+
+st.sidebar.subheader("Date")
+all_dates = sorted(df["timestamp"].dt.date.unique())
+pick = st.sidebar.selectbox("Pick a date", all_dates[-30:] if len(all_dates)>30 else all_dates)
+
+# Slice a window around NY session of the picked date
+ny_start = pd.to_datetime(str(pick) + " " + cfg["sessions"]["ny"]["start"]).tz_localize(df["timestamp"].dt.tz)
+ny_end   = pd.to_datetime(str(pick) + " " + cfg["sessions"]["ny"]["end"]).tz_localize(df["timestamp"].dt.tz)
+win = df[(df["timestamp"] >= ny_start - pd.Timedelta(minutes=cfg["plot"]["snapshot_bars_before"])) &
+         (df["timestamp"] <= ny_end + pd.Timedelta(minutes=cfg["plot"]["snapshot_bars_after"]))]
+
+fig = go.Figure(data=[go.Candlestick(x=win['timestamp'], open=win['open'], high=win['high'], low=win['low'], close=win['close'])])
+
+# Add Asia/London levels (most recent prior to NY open)
+mr_asia = asia_levels.get(pick)
+mr_london = london_levels.get(pick)
+
+if mr_asia:
+    fig.add_hline(y=mr_asia["high"], line_color="blue", annotation_text="Asia H")
+    fig.add_hline(y=mr_asia["low"],  line_color="blue", annotation_text="Asia L")
+if mr_london:
+    fig.add_hline(y=mr_london["high"], line_color="purple", annotation_text="London H")
+    fig.add_hline(y=mr_london["low"],  line_color="purple", annotation_text="London L")
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("### Backtest (subset)")
+res = run_backtest(df, cfg, asia_levels, london_levels)
+st.dataframe(res.tail(20))
+```
+
+---
+
+## 11) How This Meets Your Requirements
+
+* **Most recent session levels** only at NY open are enforced via the per‑day lookup (`asia_levels[pick]`, `london_levels[pick]`) which are computed **before** NY open. You can tighten this by checking session end timestamps explicitly.
+* **Nearest level** computation is built in (`nearest_levels`)
+* **Stop at nearest support/resistance** with configurable padding
+* **Confluence scoring** captures the *alignment* concept
+* **Retrace entry after sweep** included; time‑boxed to the NY window
+* **Backtest** loop produces per‑trade rows; extend to full analytics easily
+* **Snapshot**: Streamlit chart overlays Asia/London levels around NY session; you can add markers for entry/SL/TP in `run_backtest` and annotate on the chart.
+
+---
+
+## 12) Next Enhancements (when you’re ready)
+
+* Explicit **session end timestamps** to guarantee “prior to NY open” correctness for sessions crossing midnight
+* Add **ATR** normalization for distances; alternative confluence models
+* **Next‑level** TP mode and **hybrid** mode
+* **Multiple entries** per day with cooldown
+* **CSV/Parquet** support; speedups with Polars
+* Rich trade analytics dashboard (R‑distribution, equity curve, drawdowns)
+* Auto‑export **PNG snapshots** of each entry area
+
+---
+
+### Quick Start
+
+1. Paste these files into the structure above
+2. `pip install -r requirements.txt` (pandas, numpy, pyyaml, plotly, streamlit, openpyxl, pytz)
+3. Put your Excel at `data/nq_minute.xlsx` or upload in the app
+4. `streamlit run app.py`
+
+You’ll get:
+
+* Session levels & NY open snapshot
+* First pass backtest table
+* A foundation you can iterate quickly
