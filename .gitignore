@@ -1,0 +1,14 @@
+# Secrets / local environment
+.env
+.env.*
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+
